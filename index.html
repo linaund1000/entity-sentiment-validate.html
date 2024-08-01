@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sentiment Analysis Annotation UI</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            margin: 0;
+            padding: 20px;
+            background-color: #f4f4f4;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background-color: #fff;
+            padding: 20px;
+            border-radius: 5px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+        }
+        h1, h2, h3 {
+            color: #333;
+        }
+        .token {
+            display: inline-block;
+            margin: 2px;
+            padding: 2px 5px;
+            cursor: pointer;
+            border: 1px solid #ddd;
+            border-radius: 3px;
+            transition: background-color 0.3s;
+        }
+        .token.selected {
+            background-color: #ffeb3b;
+        }
+        .token.entity {
+            font-weight: bold;
+        }
+        .token.entity-positive {
+            background-color: #a5d6a7;
+            color: #1b5e20;
+        }
+        .token.entity-neutral {
+            background-color: #fff59d;
+            color: #f57f17;
+        }
+        .token.entity-negative {
+            background-color: #ef9a9a;
+            color: #b71c1c;
+        }
+        .controls {
+            margin-top: 20px;
+        }
+        button {
+            margin-right: 10px;
+            padding: 8px 16px;
+            cursor: pointer;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            transition: background-color 0.3s;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        #entities-container {
+            margin-top: 20px;
+        }
+        .entity-item {
+            margin: 5px 0;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 3px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .entity-item.positive {
+            background-color: #a5d6a7;
+        }
+        .entity-item.negative {
+            background-color: #ef9a9a;
+        }
+        .entity-item.neutral {
+            background-color: #fff59d;
+        }
+        #loading {
+            display: none;
+            text-align: center;
+            margin-top: 20px;
+        }
+        #json-editor {
+            width: 100%;
+            height: 200px;
+            margin-top: 20px;
+            font-family: monospace;
+        }
+        #progress-info {
+            margin-top: 20px;
+            padding: 10px;
+            background-color: #e7f3fe;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Sentiment Analysis Annotation UI</h1>
+        <div id="sample-content">
+            <h2>Sample Text:</h2>
+            <div id="sample-text" contenteditable="true"></div>
+            <h2>Tokens:</h2>
+            <div id="tokens-container"></div>
+        </div>
+        <div class="controls">
+            <button onclick="assignSentiment('positive')">Positive</button>
+            <button onclick="assignSentiment('neutral')">Neutral</button>
+            <button onclick="assignSentiment('negative')">Negative</button>
+            <button onclick="saveSample()">Save Sample</button>
+            <button onclick="nextSample()">Next Sample</button>
+        </div>
+        <div id="entities-container"></div>
+        <div id="loading">Loading...</div>
+        <div id="progress-info">
+            <h3>Progress</h3>
+            <p>Total samples: <span id="total-count">0</span></p>
+            <p>Processed samples: <span id="processed-count">0</span></p>
+            <p>Progress: <span id="progress-percentage">0</span>%</p>
+        </div>
+        <h3>JSON Editor:</h3>
+        <textarea id="json-editor"></textarea>
+        <button onclick="updateFromJSON()">Update from JSON</button>
+    </div>
+
+    <script>
+        let API_BASE_URL = 'http://localhost:5000';
+        let currentSample = null;
+        let selectedTokens = new Set();
+
+        const API = {
+            async fetchSample() {
+                const response = await fetch(`${API_BASE_URL}/api/sample`);
+                if (!response.ok) {
+                    if (response.status === 404) {
+                        return null;
+                    }
+                    throw new Error('Failed to fetch sample');
+                }
+                return await response.json();
+            },
+            async saveSample(sample) {
+                const response = await fetch(`${API_BASE_URL}/api/sample`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(sample)
+                });
+                if (!response.ok) throw new Error('Failed to save sample');
+                return await response.json();
+            },
+            async fetchProgress() {
+                const response = await fetch(`${API_BASE_URL}/api/progress`);
+                if (!response.ok) throw new Error('Failed to fetch progress');
+                return await response.json();
+            }
+        };
+
+        function displaySample(sample) {
+            currentSample = sample;
+            document.getElementById('sample-text').textContent = sample.text;
+            const tokensContainer = document.getElementById('tokens-container');
+            tokensContainer.innerHTML = '';
+            let position = 0;
+            sample.tokens.forEach((token, index) => {
+                const span = document.createElement('span');
+                span.textContent = token;
+                span.className = 'token';
+                span.onclick = () => toggleToken(index);
+                span.dataset.start = position;
+                position += token.length;
+                span.dataset.end = position;
+
+                const entity = sample.entities.find(e => e.token_indices.includes(index));
+                if (entity) {
+                    span.classList.add('entity', `entity-${entity.sentiment}`);
+                }
+
+                tokensContainer.appendChild(span);
+                tokensContainer.appendChild(document.createTextNode(' '));
+                position += 1;
+            });
+            displayEntities();
+            updateJSONEditor();
+        }
+
+        function toggleToken(index) {
+            const tokenElement = document.querySelectorAll('.token')[index];
+            if (selectedTokens.has(index)) {
+                selectedTokens.delete(index);
+                tokenElement.classList.remove('selected');
+            } else {
+                selectedTokens.add(index);
+                tokenElement.classList.add('selected');
+            }
+        }
+
+        function assignSentiment(sentiment) {
+            if (selectedTokens.size === 0) return;
+            const entityTokenIndices = Array.from(selectedTokens).sort((a, b) => a - b);
+            const entityTokens = entityTokenIndices.map(index => currentSample.tokens[index]);
+            const entityText = entityTokens.join(' ');
+
+            const startToken = document.querySelectorAll('.token')[entityTokenIndices[0]];
+            const endToken = document.querySelectorAll('.token')[entityTokenIndices[entityTokenIndices.length - 1]];
+            const start = parseInt(startToken.dataset.start);
+            const end = parseInt(endToken.dataset.end);
+
+            currentSample.entities = currentSample.entities.filter(e =>
+                !e.token_indices.some(t => entityTokenIndices.includes(t))
+            );
+
+            currentSample.entities.push({
+                text: entityText,
+                sentiment: sentiment,
+                token_indices: entityTokenIndices,
+                char_span: [start, end]
+            });
+            selectedTokens.clear();
+            displaySample(currentSample);
+        }
+
+        function displayEntities() {
+            const entitiesContainer = document.getElementById('entities-container');
+            entitiesContainer.innerHTML = '<h2>Entities:</h2>';
+            currentSample.entities.forEach((entity, index) => {
+                const div = document.createElement('div');
+                div.className = `entity-item ${entity.sentiment}`;
+                div.innerHTML = `
+                    <span>${entity.text} - ${entity.sentiment} (Tokens: ${entity.token_indices.join(', ')}, Span: ${entity.char_span.join('-')})</span>
+                    <button onclick="deleteEntity(${index})">Delete</button>
+                `;
+                entitiesContainer.appendChild(div);
+            });
+        }
+
+        function deleteEntity(index) {
+            currentSample.entities.splice(index, 1);
+            displaySample(currentSample);
+        }
+
+        function updateJSONEditor() {
+            const jsonEditor = document.getElementById('json-editor');
+            jsonEditor.value = JSON.stringify(currentSample, null, 2);
+        }
+
+        function updateFromJSON() {
+            try {
+                const jsonEditor = document.getElementById('json-editor');
+                currentSample = JSON.parse(jsonEditor.value);
+                displaySample(currentSample);
+            } catch (error) {
+                console.error('Error parsing JSON:', error);
+                alert('Invalid JSON. Please check your input.');
+            }
+        }
+
+        async function nextSample() {
+            showLoading(true);
+            try {
+                const sample = await API.fetchSample();
+                if (sample) {
+                    displaySample(sample);
+                } else {
+                    alert('No more samples to process');
+                }
+            } catch (error) {
+                console.error('Error processing sample:', error);
+                alert('An error occurred. Please check the console for details.');
+            } finally {
+                showLoading(false);
+                updateProgress();
+            }
+        }
+
+        async function saveSample() {
+            showLoading(true);
+            try {
+                currentSample.text = document.getElementById('sample-text').textContent;
+                currentSample.validated = 1; // Mark as validated when saving
+                await API.saveSample(currentSample);
+                alert('Sample saved successfully');
+                nextSample(); // Load the next sample after saving
+            } catch (error) {
+                console.error('Error saving sample:', error);
+                alert('An error occurred while saving. Please check the console for details.');
+            } finally {
+                showLoading(false);
+                updateProgress();
+            }
+        }
+
+        function showLoading(show) {
+            document.getElementById('loading').style.display = show ? 'block' : 'none';
+        }
+
+        async function updateProgress() {
+            try {
+                const progress = await API.fetchProgress();
+                document.getElementById('total-count').textContent = progress.total_count;
+                document.getElementById('processed-count').textContent = progress.processed_count;
+                document.getElementById('progress-percentage').textContent = progress.progress_percentage.toFixed(2);
+            } catch (error) {
+                console.error('Error updating progress:', error);
+            }
+        }
+
+        // Initialize the UI
+        nextSample();
+        updateProgress();
+
+        // Update progress periodically
+        setInterval(updateProgress, 60000); // Update every minute
+    </script>
+  <p>@emrekaratasi</p>
+</body>
+</html>
